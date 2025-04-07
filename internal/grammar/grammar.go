@@ -7,14 +7,16 @@ import (
 )
 
 type Grammar struct {
-	Terminals    []string              `yaml:"terminals"`
-	NonTerminals []string              `yaml:"nonterminals"`
+	Terminals    map[string]bool       `yaml:"terminals"`
+	NonTerminals map[string]bool       `yaml:"nonterminals"`
 	Start        string                `yaml:"start"`
 	Productions  map[string][][]string `yaml:"productions"`
 
-	// Cache for First and Follow sets
-	firstCache  map[string]map[string]struct{}
-	followCache map[string]map[string]struct{}
+	// Cache for First and Follow sets and epsilons
+	firstCache   map[string]map[string]bool
+	followCache  map[string]map[string]bool
+	epsilonCache map[string]bool
+	augStart     string
 }
 
 func LoadGrammar(filename string) (*Grammar, error) {
@@ -23,11 +25,36 @@ func LoadGrammar(filename string) (*Grammar, error) {
 		return nil, err
 	}
 
-	var grammar Grammar
-	err = yaml.Unmarshal(data, &grammar)
+	var tempgrammar struct {
+		Terminals    []string              `yaml:"terminals"`
+		NonTerminals []string              `yaml:"nonterminals"`
+		Start        string                `yaml:"start"`
+		Productions  map[string][][]string `yaml:"productions"`
+	}
+	err = yaml.Unmarshal(data, &tempgrammar)
 	if err != nil {
 		return nil, err
 	}
+
+	var grammar Grammar
+	grammar.Terminals = make(map[string]bool)
+	grammar.NonTerminals = make(map[string]bool)
+	for _, terminal := range tempgrammar.Terminals {
+		grammar.Terminals[terminal] = true
+	}
+	for _, nonTerminal := range tempgrammar.NonTerminals {
+		grammar.NonTerminals[nonTerminal] = true
+	}
+	grammar.Start = tempgrammar.Start
+	grammar.Productions = tempgrammar.Productions
+
+	newStart := grammar.Start + "'"
+	grammar.NonTerminals[newStart] = true
+	grammar.Productions[newStart] = [][]string{{grammar.Start, "$"}}
+
+	grammar.Terminals["$"] = true
+
+	grammar.augStart = newStart
 
 	grammar.ComputeFirst()
 	grammar.ComputeFollow()
@@ -35,106 +62,154 @@ func LoadGrammar(filename string) (*Grammar, error) {
 	return &grammar, nil
 }
 
-func (g *Grammar) ComputeFirst() map[string]map[string]struct{} {
-	if g.firstCache != nil {
-		return g.firstCache
+func (grammar *Grammar) ComputeEpsilon() map[string]bool {
+	if grammar.epsilonCache != nil {
+		return grammar.epsilonCache
 	}
 
-	first := map[string]map[string]struct{}{}
-	for _, terminal := range g.Terminals {
-		first[terminal] = map[string]struct{}{terminal: {}}
+	epsilon := make(map[string]bool)
+	var changed bool = true
+	for changed {
+		changed = false
+		for nonTerminal, productions := range grammar.Productions {
+			for _, production := range productions {
+				if len(production) == 0 && !epsilon[nonTerminal] {
+					epsilon[nonTerminal] = true
+					changed = true
+				}
+
+				nullable := true
+				for _, symbol := range production {
+					if !epsilon[symbol] {
+						nullable = false
+						break
+					}
+				}
+				if nullable && !epsilon[nonTerminal] {
+					epsilon[nonTerminal] = true
+					changed = true
+				}
+			}
+		}
 	}
 
-	for _, nonTerminal := range g.NonTerminals {
-		first[nonTerminal] = map[string]struct{}{}
+	grammar.epsilonCache = epsilon
+	return epsilon
+}
+
+func (grammar *Grammar) ComputeFirst() map[string]map[string]bool {
+	if grammar.firstCache != nil {
+		return grammar.firstCache
 	}
 
+	epsilon := grammar.ComputeEpsilon()
+
+	// First set for terminals is the terminal itself
+	first := make(map[string]map[string]bool)
+	for terminal := range grammar.Terminals {
+		first[terminal] = map[string]bool{terminal: true}
+	}
+
+	// Initially empty for non-terminals
+	for nonTerminal := range grammar.NonTerminals {
+		first[nonTerminal] = make(map[string]bool)
+	}
+
+	// Fixpoint iteration to compute First sets
 	changed := true
 	for changed {
 		changed = false
-		for nonTerminal, productions := range g.Productions {
-			for _, production := range productions {
-				for _, symbol := range production {
-					if _, isTerminal := first[symbol]; isTerminal {
-						if _, exists := first[nonTerminal][symbol]; !exists {
-							first[nonTerminal][symbol] = struct{}{}
+		for nonTerminal, rightHandSides := range grammar.Productions {
+			for _, rightHandSide := range rightHandSides {
+				for _, symbol := range rightHandSide {
+					// union the first of the symbol with the first of the non-terminal
+					updated_first_nt := make(map[string]bool)
+					for k := range first[nonTerminal] {
+						updated_first_nt[k] = true
+					}
+					for k := range first[symbol] {
+						if !first[nonTerminal][k] {
+							updated_first_nt[k] = true
 							changed = true
 						}
+					}
+					first[nonTerminal] = updated_first_nt
+
+					// if the current symbol cannot create an epsilon
+					// then we are done
+					if !epsilon[symbol] {
 						break
-					} else {
-						for terminal := range first[symbol] {
-							if _, exists := first[nonTerminal][terminal]; !exists {
-								first[nonTerminal][terminal] = struct{}{}
-								changed = true
-							}
-						}
-						if _, exists := first[symbol][""]; !exists {
-							break
-						}
 					}
 				}
 			}
 		}
 	}
 
-	g.firstCache = first
+	grammar.firstCache = first
 	return first
 }
 
-func (g *Grammar) ComputeFollow() map[string]map[string]struct{} {
-	if g.followCache != nil {
-		return g.followCache
+func (grammar *Grammar) ComputeFollow() map[string]map[string]bool {
+	if grammar.followCache != nil {
+		return grammar.followCache
 	}
 
-	follow := map[string]map[string]struct{}{}
-	for _, nonTerminal := range g.NonTerminals {
-		follow[nonTerminal] = map[string]struct{}{}
-	}
+	epsilon := grammar.ComputeEpsilon()
+	first := grammar.ComputeFirst()
 
-	follow[g.Start]["$"] = struct{}{}
+	follow := make(map[string]map[string]bool)
+
+	for nonTerminal := range grammar.NonTerminals {
+		follow[nonTerminal] = make(map[string]bool)
+	}
 
 	changed := true
 	for changed {
 		changed = false
-		for nonTerminal, productions := range g.Productions {
-			for _, production := range productions {
-				for i, symbol := range production {
-					if _, isNonTerminal := follow[symbol]; isNonTerminal {
-						if i+1 < len(production) {
-							nextSymbol := production[i+1]
-							if _, isTerminal := follow[nextSymbol]; isTerminal {
-								if _, exists := follow[symbol][nextSymbol]; !exists {
-									follow[symbol][nextSymbol] = struct{}{}
-									changed = true
-								}
-							} else {
-								for terminal := range g.firstCache[nextSymbol] {
-									if terminal != "" && terminal != "$" {
-										if _, exists := follow[symbol][terminal]; !exists {
-											follow[symbol][terminal] = struct{}{}
-											changed = true
-										}
-									}
-								}
-								if _, exists := g.firstCache[nextSymbol][""]; exists {
-									if _, exists := follow[symbol]["$"]; !exists {
-										follow[symbol]["$"] = struct{}{}
-										changed = true
-									}
-								}
-							}
-						} else if _, exists := follow[nonTerminal]["$"]; exists {
-							if _, exists := follow[symbol]["$"]; !exists {
-								follow[symbol]["$"] = struct{}{}
+		for nonTerminal, rightHandSides := range grammar.Productions {
+			for _, rightHandSide := range rightHandSides {
+				aux := follow[nonTerminal]
+				for _, symbol := range Reversed(rightHandSide) {
+					if follow[symbol] != nil {
+						updated_follow_symbol := make(map[string]bool)
+						for k := range follow[symbol] {
+							updated_follow_symbol[k] = true
+						}
+						for k := range aux {
+							if !follow[symbol][k] {
+								updated_follow_symbol[k] = true
 								changed = true
 							}
 						}
+						follow[symbol] = updated_follow_symbol
+					}
+
+					if epsilon[symbol] {
+						for k := range first[symbol] {
+							aux[k] = true
+						}
+					} else {
+						updated_aux := make(map[string]bool)
+						for k := range first[symbol] {
+							updated_aux[k] = true
+						}
+						aux = updated_aux
 					}
 				}
 			}
 		}
 	}
 
-	g.followCache = follow
+	grammar.followCache = follow
 	return follow
+}
+
+func Reversed(arr []string) []string {
+	result := make([]string, len(arr))
+
+	for i, j := len(arr)-1, 0; i >= 0; i, j = i-1, j+1 {
+		result[j] = arr[i]
+	}
+
+	return result
 }

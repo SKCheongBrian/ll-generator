@@ -38,35 +38,38 @@ productions:
 		t.Fatalf("Failed to load grammar: %v", err)
 	}
 
+	// Check start symbol
 	if grammar.Start != "S" {
 		t.Errorf("Expected start symbol 'S', got '%s'", grammar.Start)
 	}
 
-	expectedTerminals := []string{"a", "b"}
+	// Check terminals
+	expectedTerminals := map[string]bool{"a": true, "b": true, "$": true}
 	if len(grammar.Terminals) != len(expectedTerminals) {
-		t.Errorf("Expected %d terminals, got %d",
-			len(expectedTerminals), len(grammar.Terminals))
+		t.Errorf("Expected %d terminals, got %d", len(expectedTerminals), len(grammar.Terminals))
 	}
-	for i, terminal := range expectedTerminals {
-		if grammar.Terminals[i] != terminal {
-			t.Errorf("Expected terminal '%s', got '%s'",
-				terminal, grammar.Terminals[i])
+	for terminal := range expectedTerminals {
+		if !grammar.Terminals[terminal] {
+			t.Errorf("Expected terminal '%s' but it was not found", terminal)
 		}
 	}
 
-	expectedNonTerminals := []string{"S", "A"}
+	// Check non-terminals
+	expectedNonTerminals := map[string]bool{"S": true, "A": true, "S'": true}
 	if len(grammar.NonTerminals) != len(expectedNonTerminals) {
-		t.Errorf("Expected %d nonterminals, got %d", len(expectedNonTerminals), len(grammar.NonTerminals))
+		t.Errorf("Expected %d non-terminals, got %d", len(expectedNonTerminals), len(grammar.NonTerminals))
 	}
-	for i, nonTerminal := range expectedNonTerminals {
-		if grammar.NonTerminals[i] != nonTerminal {
-			t.Errorf("Expected nonterminal '%s', got '%s'", nonTerminal, grammar.NonTerminals[i])
+	for nonTerminal := range expectedNonTerminals {
+		if !grammar.NonTerminals[nonTerminal] {
+			t.Errorf("Expected non-terminal '%s', but it was not found", nonTerminal)
 		}
 	}
 
+	// Check productions
 	expectedProductions := map[string][][]string{
-		"S": {{"A", "a"}, {"b"}},
-		"A": {{"a"}},
+		"S":  {{"A", "a"}, {"b"}},
+		"A":  {{"a"}},
+		"S'": {{"S", "$"}},
 	}
 	for nonTerminal, rules := range expectedProductions {
 		if len(grammar.Productions[nonTerminal]) != len(rules) {
@@ -83,4 +86,28 @@ productions:
 
 	fmt.Println(grammar.firstCache)
 	fmt.Println(grammar.followCache)
+}
+
+func TestComputeEpsilon(t *testing.T) {
+	grammar := &Grammar{
+		Productions: map[string][][]string{
+			"S": {{"A", "a"}, {"B"}},
+			"A": {{"a"}, {}},
+			"B": {{"b"}, {}},
+		},
+	}
+
+	epsilon := grammar.ComputeEpsilon()
+
+	if !epsilon["A"] {
+		t.Errorf("Expected 'A' to be epsilon, but it was not")
+	}
+	if !epsilon["S"] {
+		t.Errorf("Expected 'S' to be epsilon, but it was not")
+	}
+	if !epsilon["B"] {
+		t.Errorf("Expected 'B' to  be epsilon, but it was not")
+	}
+
+	fmt.Println(epsilon)
 }
