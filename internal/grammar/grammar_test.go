@@ -91,9 +91,18 @@ productions:
 func TestComputeEpsilon(t *testing.T) {
 	grammar := &Grammar{
 		Productions: map[string][][]string{
-			"S": {{"A", "a"}, {"B"}},
-			"A": {{"a"}, {}},
-			"B": {{"b"}, {}},
+			"S": {
+				{"A", "a"},
+				{"B"},
+			},
+			"A": {
+				{"a"},
+				{""},
+			},
+			"B": {
+				{"b"},
+				{""},
+			},
 		},
 	}
 

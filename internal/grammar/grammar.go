@@ -6,6 +6,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type Production struct {
+	Lhs string
+	Rhs []string
+}
+
 type Grammar struct {
 	Terminals    map[string]bool       `yaml:"terminals"`
 	NonTerminals map[string]bool       `yaml:"nonterminals"`
@@ -62,6 +67,10 @@ func LoadGrammar(filename string) (*Grammar, error) {
 	return &grammar, nil
 }
 
+func isEpsilonProduction(rhs []string) bool {
+	return len(rhs) == 1 && rhs[0] == ""
+}
+
 func (grammar *Grammar) ComputeEpsilon() map[string]bool {
 	if grammar.epsilonCache != nil {
 		return grammar.epsilonCache
@@ -73,7 +82,7 @@ func (grammar *Grammar) ComputeEpsilon() map[string]bool {
 		changed = false
 		for nonTerminal, productions := range grammar.Productions {
 			for _, production := range productions {
-				if len(production) == 0 && !epsilon[nonTerminal] {
+				if isEpsilonProduction(production) && !epsilon[nonTerminal] {
 					epsilon[nonTerminal] = true
 					changed = true
 				}
@@ -202,6 +211,41 @@ func (grammar *Grammar) ComputeFollow() map[string]map[string]bool {
 
 	grammar.followCache = follow
 	return follow
+}
+
+// Generates the first set for a given sequence of symbols.
+func (grammar *Grammar) FirstOfSequence(symbols []string) map[string]bool {
+	result := make(map[string]bool)
+
+	if isEpsilonProduction(symbols) {
+		result[""] = true
+		return result
+	}
+
+	epsilon := grammar.ComputeEpsilon()
+	first := grammar.ComputeFirst()
+	for _, symbol := range symbols {
+		for t := range first[symbol] {
+			result[t] = true
+		}
+		if !epsilon[symbol] {
+			delete(result, "")
+			return result
+		}
+	}
+
+	result[""] = true
+	return result
+}
+
+func (grammar *Grammar) CanDeriveEpsilon(symbols []string) bool {
+	epsilon := grammar.ComputeEpsilon()
+	for _, symbol := range symbols {
+		if !epsilon[symbol] {
+			return false
+		}
+	}
+	return true
 }
 
 func Reversed(arr []string) []string {
