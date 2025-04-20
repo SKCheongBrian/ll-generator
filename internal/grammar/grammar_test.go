@@ -1,8 +1,8 @@
 package grammar
 
 import (
-	"fmt"
 	"os"
+	"reflect"
 	"testing"
 )
 
@@ -12,6 +12,7 @@ func TestLoadGrammar(t *testing.T) {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
 	defer os.Remove(tempFile.Name())
+	defer tempFile.Close()
 
 	yamlContent := `
 terminals:
@@ -31,7 +32,6 @@ productions:
 	if _, err := tempFile.Write([]byte(yamlContent)); err != nil {
 		t.Fatalf("Failed to write to temp file: %v", err)
 	}
-	tempFile.Close()
 
 	grammar, err := LoadGrammar(tempFile.Name())
 	if err != nil {
@@ -45,78 +45,140 @@ productions:
 
 	// Check terminals
 	expectedTerminals := map[string]bool{"a": true, "b": true, "$": true}
-	if len(grammar.Terminals) != len(expectedTerminals) {
-		t.Errorf("Expected %d terminals, got %d", len(expectedTerminals), len(grammar.Terminals))
-	}
-	for terminal := range expectedTerminals {
-		if !grammar.Terminals[terminal] {
-			t.Errorf("Expected terminal '%s' but it was not found", terminal)
-		}
+	if !reflect.DeepEqual(grammar.Terminals, expectedTerminals) {
+		t.Errorf("Expected terminals %v, got %v", expectedTerminals, grammar.Terminals)
 	}
 
 	// Check non-terminals
 	expectedNonTerminals := map[string]bool{"S": true, "A": true, "S'": true}
-	if len(grammar.NonTerminals) != len(expectedNonTerminals) {
-		t.Errorf("Expected %d non-terminals, got %d", len(expectedNonTerminals), len(grammar.NonTerminals))
-	}
-	for nonTerminal := range expectedNonTerminals {
-		if !grammar.NonTerminals[nonTerminal] {
-			t.Errorf("Expected non-terminal '%s', but it was not found", nonTerminal)
-		}
+	if !reflect.DeepEqual(grammar.NonTerminals, expectedNonTerminals) {
+		t.Errorf("Expected non-terminals %v, got %v", expectedNonTerminals, grammar.NonTerminals)
 	}
 
-	// Check productions
-	expectedProductions := map[string][][]string{
-		"S":  {{"A", "a"}, {"b"}},
-		"A":  {{"a"}},
-		"S'": {{"S", "$"}},
-	}
-	for nonTerminal, rules := range expectedProductions {
-		if len(grammar.Productions[nonTerminal]) != len(rules) {
-			t.Errorf("Expected %d productions for '%s', got %d", len(rules), nonTerminal, len(grammar.Productions[nonTerminal]))
-		}
-		for i, rule := range rules {
-			for j, symbol := range rule {
-				if grammar.Productions[nonTerminal][i][j] != symbol {
-					t.Errorf("Expected symbol '%s' in production, got '%s'", symbol, grammar.Productions[nonTerminal][i][j])
-				}
-			}
-		}
+	expectedProductions := map[string][]Production{
+		"S": {
+			{
+				Lhs: "S",
+				Rhs: []string{
+					"A", "a",
+				},
+			},
+			{
+				Lhs: "S",
+				Rhs: []string{
+					"b",
+				},
+			},
+		},
+
+		"A": {
+			{
+				Lhs: "A",
+				Rhs: []string{
+					"a",
+				},
+			},
+		},
+
+		"S'": {
+			{
+				Lhs: "S'",
+				Rhs: []string{
+					"S", "$",
+				},
+			},
+		},
 	}
 
-	fmt.Println(grammar.firstCache)
-	fmt.Println(grammar.followCache)
+	if !reflect.DeepEqual(grammar.Productions, expectedProductions) {
+		t.Errorf("Expected productions %v, got %v", expectedProductions, grammar.Productions)
+	}
+}
+
+func TestFollow1(t *testing.T) {
+	grammar := &Grammar{
+		Terminals: map[string]bool{
+			"a": true, "b": true, "+": true, "*": true, "$": true,
+		},
+		NonTerminals: map[string]bool{
+			"E": true, "E'": true, "T": true, "T'": true, "F": true,
+		},
+		Start: "E",
+		Productions: map[string][]Production{
+			"E":  {{Lhs: "E", Rhs: []string{"T", "E'"}}},
+			"E'": {{Lhs: "E'", Rhs: []string{"+", "T", "E'"}}, {Lhs: "E'", Rhs: []string{""}}},
+			"T":  {{Lhs: "T", Rhs: []string{"F", "T'"}}},
+			"T'": {{Lhs: "T'", Rhs: []string{"*", "F", "T'"}}, {Lhs: "T'", Rhs: []string{""}}},
+			"F":  {{Lhs: "F", Rhs: []string{"a"}}, {Lhs: "F", Rhs: []string{"b"}}},
+		},
+		augStart: "S",
+	}
+
+	// Add augmented start production
+	grammar.NonTerminals["S"] = true
+	grammar.Productions["S"] = append(grammar.Productions["S"], Production{
+		Lhs: "S", Rhs: []string{"E", "$"},
+	})
+	grammar.Terminals["$"] = true
+
+	follow := grammar.ComputeFollow()
+
+	expected := map[string]map[string]bool{
+		"E":  {"$": true},
+		"E'": {"$": true},
+		"T":  {"+": true, "$": true},
+		"T'": {"+": true, "$": true},
+		"F":  {"*": true, "+": true, "$": true},
+	}
+
+	for nt, expectedSet := range expected {
+		actualSet := follow[nt]
+		if !reflect.DeepEqual(actualSet, expectedSet) {
+			t.Errorf("FOLLOW(%s): expected %v, got %v", nt, expectedSet, actualSet)
+		}
+	}
 }
 
 func TestComputeEpsilon(t *testing.T) {
 	grammar := &Grammar{
-		Productions: map[string][][]string{
+		Productions: map[string][]Production{
 			"S": {
-				{"A", "a"},
-				{"B"},
+				{
+					Lhs: "S",
+					Rhs: []string{"A", "a"},
+				},
+				{
+					Lhs: "S",
+					Rhs: []string{"B"},
+				},
 			},
 			"A": {
-				{"a"},
-				{""},
+				{
+					Lhs: "A",
+					Rhs: []string{"a"},
+				},
+				{
+					Lhs: "A",
+					Rhs: []string{""},
+				},
 			},
 			"B": {
-				{"b"},
-				{""},
+				{
+					Lhs: "B",
+					Rhs: []string{"b"},
+				},
+				{
+					Lhs: "B",
+					Rhs: []string{""},
+				},
 			},
 		},
 	}
 
 	epsilon := grammar.ComputeEpsilon()
 
-	if !epsilon["A"] {
-		t.Errorf("Expected 'A' to be epsilon, but it was not")
+	expectedEpsilon := map[string]bool{"A": true, "B": true, "S": true}
+	if !reflect.DeepEqual(epsilon, expectedEpsilon) {
+		t.Errorf("Expected epsilon %v, got %v", expectedEpsilon, epsilon)
 	}
-	if !epsilon["S"] {
-		t.Errorf("Expected 'S' to be epsilon, but it was not")
-	}
-	if !epsilon["B"] {
-		t.Errorf("Expected 'B' to  be epsilon, but it was not")
-	}
-
-	fmt.Println(epsilon)
 }
